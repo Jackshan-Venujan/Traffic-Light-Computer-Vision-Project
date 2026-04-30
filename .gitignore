@@ -1,0 +1,43 @@
+# Requested
+Dataset/
+Project_Proposal/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache/build
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter artifacts
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Processed/raw data artifacts
+data/raw/
+data/processed/images/
+data/processed/labels/
+data/processed/**/*.cache
+
+# Training/export outputs
+runs/
+models/
+
+# Model weights and exports
+*.pt
+*.onnx
+*.engine
+
+# Local/OS clutter
+*.log
+*.tmp
+*.deb
+.DS_Store
+Thumbs.db

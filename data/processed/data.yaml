@@ -1,0 +1,21 @@
+path: data/processed
+train: images/train
+val: images/val
+test: images/test
+
+nc: 14
+names:
+  0: go
+  1: go forward
+  2: go forward traffic light
+  3: go left
+  4: go left traffic light
+  5: go traffic light
+  6: stop
+  7: stop left
+  8: stop left traffic light
+  9: stop traffic light
+  10: warning
+  11: warning left
+  12: warning left traffic light
+  13: warning traffic light

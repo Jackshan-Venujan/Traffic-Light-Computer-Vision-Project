@@ -41,3 +41,5 @@ models/
 *.deb
 .DS_Store
 Thumbs.db
+
+*.mp4

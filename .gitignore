@@ -43,3 +43,6 @@ models/
 Thumbs.db
 
 *.mp4
+
+# folders
+problamatic_images/

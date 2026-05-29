@@ -22,6 +22,7 @@ so it can be executed cell-by-cell or top-to-bottom.
 8. [Inference on a New Image / Video](#8-inference-on-a-new-image--video)
 9. [Tuning & Troubleshooting](#9-tuning--troubleshooting)
 10. [Why We Filter to 7 Classes](#10-why-we-filter-to-7-classes)
+11. [Two-Stage Pipeline (Step 13)](#11-two-stage-pipeline-step-13)
 
 ---
 
@@ -47,20 +48,34 @@ Traffic_Light_DetectioniCV project/
 │
 ├── data/
 │   ├── raw/                                ← optional staging area
-│   └── processed/                          ← YOLO-ready dataset (auto-generated)
-│       ├── data.yaml                       ← YOLOv8 dataset config
-│       ├── images/{train,val,test}/        ← images (or symlinks)
-│       └── labels/{train,val,test}/        ← YOLO .txt labels
+│   ├── processed/                          ← YOLO-ready dataset (auto-generated)
+│   │   ├── data.yaml                       ← YOLOv8 dataset config (7 housing classes)
+│   │   ├── images/{train,val,test}/        ← images (or symlinks)
+│   │   └── labels/{train,val,test}/        ← YOLO .txt labels
+│   ├── stage1/                             ← Stage-1 dataset (1-class "traffic_light")
+│   │   ├── data.yaml
+│   │   ├── images/  → symlink to data/processed/images
+│   │   └── labels/{train,val,test}/        ← labels with class id rewritten to 0
+│   └── stage2/                             ← Stage-2 crop dataset (ImageFolder layout)
+│       └── {train,val,test}/<class_name>/crop_NNNNNN.jpg
+│
+├── problamatic_images/                     ← evidence for bulb-vs-housing size problem
+│   ├── 01_bulb_vs_housing_examples.png
+│   ├── 02_size_histogram.png
+│   ├── 03_geometry_explanation.png
+│   └── 04_ratio_distribution.png
 │
 ├── scripts/
-│   └── prepare_dataset.py                  ← standalone converter (CLI alternative)
+│   ├── prepare_dataset.py                  ← standalone converter (CLI alternative)
+│   └── add_two_stage_cells.py              ← (re)appends Step 13 cells to the notebook
 │
 ├── src/                                    ← reserved for library code
 ├── guide/
 │   └── traffic_light_detection_guide.pdf   ← written guide
 │
 ├── models/
-│   └── traffic_light_detector.pt           ← copy of the best trained model
+│   ├── traffic_light_detector.pt           ← copy of the best trained model (Stage 1)
+│   └── stage2_mobilenet.pt                 ← Stage-2 MobileNetV3-Small state classifier
 │
 ├── runs/                                   ← Ultralytics output (training + predict)
 │   ├── traffic_light_v1*/                  ← first training attempts
@@ -333,6 +348,23 @@ Intro to video inference and tuning tips
 
 ### Cell 31 — *Empty placeholder cell*
 
+### Cells 36–41 — *Step 13: Two-Stage Pipeline*
+See [section 11](#11-two-stage-pipeline-step-13) for the full rationale. In short:
+
+- **Cell 36** — Step 13 markdown header.
+- **Cell 37 (13a)** — Builds `data/stage1/` by rewriting every label's class id
+  to `0` (single class `traffic_light`) and symlinking the images.
+- **Cell 38 (13b)** — Trains YOLOv8n on the 1-class data
+  (`epochs=30, imgsz=1280`). Output in `runs/stage1_localizer/`.
+- **Cell 39 (13c)** — Crops every housing box from `data/processed/` with 15%
+  padding into `data/stage2/{train,val,test}/<class_name>/`. Skips boxes
+  smaller than 16 px on the shorter side.
+- **Cell 40 (13d)** — Fine-tunes **MobileNetV3-Small** (ImageNet pretrained)
+  on 96×96 crops for 12 epochs, class-balanced loss. Saves to
+  `models/stage2_mobilenet.pt`.
+- **Cell 41 (13e)** — Defines `two_stage_predict(image_path)` and saves a
+  4-image demo to `two_stage_demo.png`.
+
 ---
 
 ## 6. Alternative: CLI Script
@@ -429,6 +461,10 @@ bulbs** (`go`, `stop`, `warning`, … — only ~2–3 px wide). YOLOv8's smalles
 detection stride is ~8 px, so the bulb labels are below the network's
 representational floor and poison training.
 
+> This filter was the **first** fix and is what makes the single-stage detector
+> trainable. The bulb information it discards is later recovered by the
+> **two-stage pipeline** in [section 11](#11-two-stage-pipeline-step-13).
+
 The fix (notebook cell 16):
 1. Keep only classes whose name ends with `" traffic light"` (the housings).
 2. Renumber them 0–6.
@@ -437,6 +473,111 @@ The fix (notebook cell 16):
 
 Subsequent runs (`runs/traffic_light_v2*`) trained successfully at
 `imgsz=1280, epochs=50`.
+
+---
+
+## 11. Two-Stage Pipeline (Step 13)
+
+### 11.1 The deeper problem the 7-class filter didn't solve
+
+Filtering to 7 housing classes (section 10) was necessary but not sufficient.
+After investigation we noticed two things:
+
+**(a) Even at `imgsz=1280`, the bulb classes are still sub-detector-floor.**
+Measured from 8 000 LISA training frames:
+
+| Class group  | Median min-side at `imgsz=640` | % below 8 px floor |
+|---|---|---|
+| **Bulb classes** (the 7 we dropped) | **4.5 px** | **99.0 %** |
+| **Housing classes** (the 7 we kept) | 13.5 px | 21.4 % |
+
+A bulb is *physically inside* a housing — every traffic light is a stack of
+3 lamps in one box, so the bulb is ~3× narrower and ~4.5× shorter than its
+housing **at any camera distance**. This is geometry, not dataset bias. Visual
+proof is in [`problamatic_images/`](problamatic_images/):
+
+| File | Shows |
+|---|---|
+| `01_bulb_vs_housing_examples.png` | 4 real frames with housing (green) + bulb (red) boxes drawn, plus an 80×80 zoom and a "what YOLO sees at imgsz=640" panel with a single 8×8 stride cell overlaid. The bulb is smaller than one grid cell. |
+| `02_size_histogram.png` | Bbox-size distribution at imgsz=640. Bulbs cluster left of the 8-px floor; housings sit right of it. |
+| `03_geometry_explanation.png` | Same housing/bulb pair shown at far / mid / close distances. Ratio stays the same; both shrink together. |
+| `04_ratio_distribution.png` | Housing-height ÷ bulb-height across 21 472 same-image pairs — sharply peaked at ~4.5×. |
+
+**(b) The 7-class housing detector is doing two jobs at once.**
+The housing class *names* (`go traffic light`, `stop traffic light`, …) already
+encode the lit-bulb state. So the detector has to simultaneously **localize**
+the housing AND **read the bulb color** from a ~13-px box. Localization is
+spatial; state-reading is a fine-grained color task — they want different
+backbones and different input resolutions.
+
+### 11.2 The fix: split localization from state-reading
+
+Two specialized models in series:
+
+```
+input frame
+    │
+    ▼
+┌────────────────────────────┐
+│ Stage 1 — YOLOv8n          │   1 class: "traffic_light"
+│ Only "is this a housing?"  │   imgsz=1280, 30 epochs
+└────────────────────────────┘
+    │  boxes = [(x1,y1,x2,y2,conf), ...]
+    ▼
+crop each housing + 15% padding
+    │
+    ▼
+┌────────────────────────────┐
+│ Stage 2 — MobileNetV3-Small│   7 classes: go / go_left / go_forward /
+│ ImageNet pretrained head   │   stop / stop_left / warning / warning_left
+│ resize to 96×96, classify  │   class-balanced cross-entropy
+└────────────────────────────┘
+    │
+    ▼
+[(box, state, det_conf, cls_conf), ...]
+```
+
+**Why this works:**
+
+- Stage 1 only has to learn "housing vs background" → easier task, higher
+  recall, fewer confused classes.
+- Stage 2 sees the housing **after** it's been cropped and resized to 96×96.
+  A bulb that was ~5 px in the source frame is now ~20 px in the crop —
+  well above any practical CNN's resolution floor.
+- The two models can be sized independently. MobileNetV3-Small adds only
+  ~2.5 M params and runs in milliseconds per crop.
+
+### 11.3 How to run Step 13
+
+Open the notebook and run cells **36 → 41** in order. They are self-contained
+and only depend on `data/processed/` already being prepared.
+
+```python
+# After both stages are trained, in any notebook cell:
+preds = two_stage_predict("data/processed/images/test/dayClip10--00000.jpg")
+for p in preds:
+    print(p["box"], p["state"], p["det_conf"], p["cls_conf"])
+```
+
+Outputs:
+
+| Path | What it is |
+|---|---|
+| `runs/stage1_localizer/weights/best.pt` | Stage-1 1-class YOLO checkpoint |
+| `data/stage2/{train,val,test}/<class>/*.jpg` | Stage-2 training crops |
+| `models/stage2_mobilenet.pt` | Stage-2 MobileNetV3-Small weights + class list |
+| `two_stage_demo.png` | 4-image demo of the combined pipeline |
+
+### 11.4 Re-generating / tweaking Step 13 cells
+
+The cells were written by [`scripts/add_two_stage_cells.py`](scripts/add_two_stage_cells.py).
+It's idempotent: running it again removes the previous Step 13 cells (marked
+with `STEP-13-TWO-STAGE-PIPELINE`) and re-appends fresh ones. Edit the cell
+sources in that script if you want to change hyper-parameters and regenerate.
+
+```bash
+python scripts/add_two_stage_cells.py
+```
 
 ---
 

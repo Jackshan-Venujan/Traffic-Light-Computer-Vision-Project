@@ -1,6 +1,7 @@
 # Requested
 Dataset/
 Project_Proposal/
+data/
 
 # Virtual environments
 .venv/
@@ -25,6 +26,14 @@ data/raw/
 data/processed/images/
 data/processed/labels/
 data/processed/**/*.cache
+
+# Generated two-stage pipeline data (regenerable by running Step 10a / 10c)
+data/stage1/
+data/stage2/
+
+# Image files (datasets, crops, etc.) — never commit raw image data
+*.jpg
+*.jpeg
 
 # Training/export outputs
 runs/

@@ -22,7 +22,7 @@ so it can be executed cell-by-cell or top-to-bottom.
 8. [Inference on a New Image / Video](#8-inference-on-a-new-image--video)
 9. [Tuning & Troubleshooting](#9-tuning--troubleshooting)
 10. [Why We Filter to 7 Classes](#10-why-we-filter-to-7-classes)
-11. [Two-Stage Pipeline (Step 13)](#11-two-stage-pipeline-step-13)
+11. [Two-Stage Pipeline (Steps 10–12)](#11-two-stage-pipeline-steps-1012)
 
 ---
 
@@ -66,22 +66,18 @@ Traffic_Light_DetectioniCV project/
 │   └── 04_ratio_distribution.png
 │
 ├── scripts/
-│   ├── prepare_dataset.py                  ← standalone converter (CLI alternative)
-│   └── add_two_stage_cells.py              ← (re)appends Step 13 cells to the notebook
+│   └── prepare_dataset.py                  ← standalone converter (CLI alternative)
 │
 ├── src/                                    ← reserved for library code
 ├── guide/
 │   └── traffic_light_detection_guide.pdf   ← written guide
 │
 ├── models/
-│   ├── traffic_light_detector.pt           ← copy of the best trained model (Stage 1)
 │   └── stage2_mobilenet.pt                 ← Stage-2 MobileNetV3-Small state classifier
 │
-├── runs/                                   ← Ultralytics output (training + predict)
-│   ├── traffic_light_v1*/                  ← first training attempts
-│   ├── traffic_light_v2*/                  ← current/final runs
-│   │   └── weights/{best.pt,last.pt,best.onnx}
-│   └── test_predictions*/                  ← saved annotated images/videos
+├── runs/                                   ← Ultralytics output
+│   └── stage1_localizer/                   ← Stage-1 (housing detector) training run
+│       └── weights/{best.pt,last.pt}
 │
 ├── test_videos/                            ← demo videos for inference
 │   ├── video2.mp4
@@ -185,192 +181,159 @@ files out of `train/`). If you need to redo the split, regenerate
 
 ## 5. Notebook Walkthrough — Cell by Cell
 
-The notebook has **32 cells** (markdown + code). Below is what each one does
-and why.
+The notebook has **33 cells** (markdown + code) that fall into four phases:
+**Setup → Data preparation (Steps 1–8) → Install (Step 9) → Train the
+two-stage pipeline (Step 10) → Test (Step 11) → Evaluate (Step 12)**.
 
 ### Cell 0 — *Title (markdown)*
-Overview of the 7-step workflow: explore → convert → prepare → train →
-evaluate → infer → export.
+Overview of the workflow.
 
 ### Cell 1 — *Pip install*
 ```python
 pip install numpy matplotlib pillow ultralytics
 ```
-Installs core dependencies. `ultralytics` brings in PyTorch and OpenCV.
+Core dependencies. `ultralytics` brings in PyTorch and OpenCV.
 
 ### Cell 2 — *Setup & imports*
 - Imports `os, json, shutil, random, pathlib, numpy, matplotlib, PIL`.
 - Sets `random.seed(42)` and `np.random.seed(42)` for reproducibility.
-- Defines path constants:
-  - `PROJECT_ROOT` = current working dir
-  - `DATASET_DIR` = `Dataset/`
-  - `DATA_PROCESSED_DIR` = `data/processed/`
-  - `MODELS_DIR` = `models/`
-  - `RUNS_DIR` = `runs/`
-
-### Cell 3 — *Step 1 header (markdown)*
-Explains the LISA folder layout (`Dataset/{train,test}/{img,ann}/`).
-
-### Cell 4 — *Explore dataset structure*
-- Loads `Dataset/meta.json` and prints the 14 class titles.
-- Builds `CLASS_NAMES` list and `CLASS_MAP` (name → id).
-- Counts images and `.json` annotations in `train/` and `test/`.
-- Prints sample filenames.
-
-### Cell 5 — *Step 2 header (markdown)*
-Intro to the Supervisly annotation format.
-
-### Cell 6 — *Examine annotation format*
-- Loads one sample `*.jpg.json` file.
-- Prints `size.{width,height}`, number of objects, and the first object's
-  `classTitle`, `geometryType`, and `points.exterior` (top-left + bottom-right).
-
-### Cell 7 — *Step 3 header (markdown)*
-Intro to visualization.
-
-### Cell 8 — *Visualize annotations*
-Side-by-side matplotlib figure showing one train image and one test image with
-all their bounding boxes drawn using a `tab20` colormap keyed by class.
-
-### Cell 9 — *Step 4 header (markdown)*
-Explains the YOLO label format:
-`class_id x_center y_center width height` — all normalized to `[0, 1]`.
-
-### Cell 10 — *Convert annotations to YOLO format*
-Defines two functions:
-- `convert_annotation_to_yolo(ann_data, class_map)` — turns one Supervisly
-  JSON into a list of YOLO lines (normalizes + clamps coords).
-- `process_split(split_name, img_dir, ann_dir, out_img_dir, out_lbl_dir, class_map, use_symlink=True)` —
-  iterates a whole split (`train` or `test`), writes `.txt` labels to
-  `data/processed/labels/<split>/` and either symlinks or copies images to
-  `data/processed/images/<split>/`.
-
-### Cell 11 — *Step 5 header (markdown)*
-Explains: take 10 % of train images and move them to `val/`.
-
-### Cell 12 — *Create validation split (10 % from train)*
-- Randomly samples 10 % of files from `data/processed/images/train/`.
-- Moves (or re-symlinks) each image **and** its corresponding `.txt` label to
-  `data/processed/images/val/` and `data/processed/labels/val/`.
-- Prints final train / val / test counts.
-
-> ⚠️ This cell mutates the processed dataset. Don't re-run it without first
-> regenerating `data/processed/` from the raw `Dataset/`.
-
-### Cell 13 — *Step 6 header (markdown)*
-Intro to `data.yaml`.
-
-### Cell 14 — *Create `data.yaml`*
-Writes `data/processed/data.yaml` with `path`, `train`, `val`, `test`, `nc`,
-and `names` from the full 14-class list.
-
-### Cell 15 — *Step 7b header (markdown)*
-Explains the **filtering step** and why the first run failed: bulb classes
-are 2–3 px and can't be learned at `imgsz=640`.
-
-### Cell 16 — *Filter dataset to 7 housing classes*
-- Builds `KEEP_NAMES` = classes whose title ends with `"traffic light"`.
-- Builds `OLD_TO_NEW` map (old class id → new 0–6 id).
-- Rewrites every `.txt` in `data/processed/labels/{train,val,test}/`, dropping
-  bulb annotations and renumbering housing annotations.
-- Rewrites `data.yaml` with `nc: 7` and the 7-class name list.
-- Prints `kept/total` annotation stats and how many images now have empty
-  labels (treated as background by YOLO).
-
-### Cell 17 — *Step 7 header (markdown)*
-Sanity-check intro.
-
-### Cell 18 — *Verify prepared dataset*
-Reads the first 3 train `.txt` labels and pretty-prints each line as
-`<class_name>: <yolo_line>`.
-
-### Cell 19 — *Step 8 header (markdown)*
-Install header.
-
-### Cell 20 — *Install YOLOv8*
-Idempotent install of `ultralytics` via `subprocess.check_call`. Skips if
-already importable.
-
-### Cell 21 — *Step 9 header (markdown)*
-Training intro.
-
-### Cell 22 — *Train YOLOv8 model*
-```python
-from ultralytics import YOLO
-model = YOLO('yolov8n.pt')
-results = model.train(
-    data='data/processed/data.yaml',
-    epochs=50,
-    imgsz=1280,        # source images are 1280×960; keeps housings ~12–26 px
-    batch=8,           # drop to 4 if OOM
-    patience=10,
-    device=0,          # 'cpu' if no GPU (slow!)
-    project='runs',
-    name='traffic_light_v2',
-)
-```
-Starts from `yolov8n.pt` (nano). Outputs go to `runs/traffic_light_v2/`.
-Bump to `yolov8s.pt` for higher accuracy.
-
-### Cell 23 — *Step 10 header (markdown)*
-
-### Cell 24 — *Inference on sample test images*
-- Finds the most recent `runs/**/weights/best.pt`.
-- Runs `model.predict()` on the first 5 images in `data/processed/images/test/`
-  with `conf=0.5`.
-- Saves annotated outputs to `runs/test_predictions/`.
-
-### Cell 25 — *Step 11 header (markdown)*
-
-### Cell 26 — *Export model to ONNX*
-- Calls `model.export(format='onnx', imgsz=640)` on `best.pt`.
-- Copies `best.pt` to `models/traffic_light_detector.pt`.
-- Produces `best.onnx` next to `best.pt`.
-
-### Cell 27 — *Summary (markdown)*
-Recap of the 8 steps and where outputs live.
-
-### Cell 28 — *Step 12 header (markdown)*
-Intro to video inference and tuning tips
-(`conf`, `imgsz`, `vid_stride`, `device`).
-
-### Cell 29 — *Inference on a video file*
-- Auto-selects the most recently modified `runs/**/weights/best.pt`.
-- Reads `VIDEO_PATH = "…/test_videos/video2.mp4"` (edit this line).
-- `model.predict(source=VIDEO_PATH, save=True, conf=0.25, iou=0.45, imgsz=1280, device=0, vid_stride=1)`.
-- Annotated `.mp4` is written under `runs/detect/predict*/`.
-
-### Cell 30 — *Streaming inference with per-frame stats*
-- Iterates `model.predict(..., stream=True)` frame-by-frame.
-- Uses `collections.Counter` to tally class detections per frame.
-- Prints class counts every 30 frames and a total across the whole video.
-- Useful for confirming which classes actually fire.
-
-### Cell 31 — *Empty placeholder cell*
-
-### Cells 36–41 — *Step 13: Two-Stage Pipeline*
-See [section 11](#11-two-stage-pipeline-step-13) for the full rationale. In short:
-
-- **Cell 36** — Step 13 markdown header.
-- **Cell 37 (13a)** — Builds `data/stage1/` by rewriting every label's class id
-  to `0` (single class `traffic_light`) and symlinking the images.
-- **Cell 38 (13b)** — Trains YOLOv8n on the 1-class data
-  (`epochs=30, imgsz=1280`). Output in `runs/stage1_localizer/`.
-- **Cell 39 (13c)** — Crops every housing box from `data/processed/` with 15%
-  padding into `data/stage2/{train,val,test}/<class_name>/`. Skips boxes
-  smaller than 16 px on the shorter side.
-- **Cell 40 (13d)** — Fine-tunes **MobileNetV3-Small** (ImageNet pretrained)
-  on 96×96 crops for 12 epochs, class-balanced loss. Saves to
-  `models/stage2_mobilenet.pt`.
-- **Cell 41 (13e)** — Defines `two_stage_predict(image_path)` and saves a
-  4-image demo to `two_stage_demo.png`.
+- Defines path constants used by every later cell:
+  `PROJECT_ROOT`, `DATASET_DIR`, `DATA_PROCESSED_DIR`, `MODELS_DIR`, `RUNS_DIR`.
 
 ---
 
-## 6. Alternative: CLI Script
+### Cells 3–4 — *Step 1: Explore the LISA dataset*
+- Loads `Dataset/meta.json` and prints the 14 source classes.
+- Builds `CLASS_NAMES` and `CLASS_MAP` (name → id).
+- Counts images / annotations in `train/` and `test/`.
 
-If you don't want to run the notebook, the converter step is also exposed as a
-standalone script:
+### Cells 5–6 — *Step 2: Examine annotation format*
+- Loads one Supervisly `*.jpg.json` file.
+- Prints `size`, number of objects, and the first object's
+  `classTitle`, `geometryType`, and `points.exterior`.
+
+### Cells 7–8 — *Step 3: Visualize an annotation*
+Side-by-side matplotlib figure showing one train + one test image with all
+their bounding boxes drawn, using `tab20` colors keyed by class.
+
+### Cells 9–10 — *Step 4: Convert to YOLO format*
+Defines and runs:
+- `convert_annotation_to_yolo()` — Supervisly JSON → YOLO normalized lines.
+- `process_split()` — iterates a whole split, writes `.txt` labels under
+  `data/processed/labels/<split>/`, symlinks (or copies) images under
+  `data/processed/images/<split>/`.
+
+### Cells 11–12 — *Step 5: Create the 10% validation split*
+- Randomly samples 10% of files from `data/processed/images/train/`.
+- Moves each image **and** its label to `val/`.
+
+> ⚠️ Cell 12 mutates the dataset. Don't re-run it without first regenerating
+> `data/processed/` from the raw `Dataset/`.
+
+### Cells 13–14 — *Step 6: Create `data.yaml`*
+Writes `data/processed/data.yaml` with `path`, `train`, `val`, `test`, `nc`,
+and `names` from the full **14-class** list (it will be rewritten in Step 7).
+
+### Cells 15–16 — *Step 7: Filter to 7 housing classes*
+- Drops the 7 bulb classes (~2–3 px wide at imgsz=640 — below YOLO's stride
+  floor; see [section 10](#10-why-we-filter-to-7-classes)).
+- Renumbers the 7 housing classes 0–6.
+- Rewrites every `.txt` label and `data.yaml`.
+
+### Cells 17–18 — *Step 8: Verify prepared dataset*
+Reads the first few train labels and pretty-prints each line as
+`<class_name>: <yolo_line>`.
+
+### Cells 19–20 — *Step 9: Install YOLOv8*
+Idempotent `pip install ultralytics`. Skips if already importable.
+
+---
+
+### Cell 21 — *Step 10 intro (markdown)*
+Explains why training is **two independent runs**: Stage 1 = housing detector
+(YOLOv8, 1 class); Stage 2 = bulb-state classifier (MobileNetV3-Small, 7 classes).
+
+### Cell 22 — *Step 10a: Build Stage-1 dataset*
+- Rewrites every label's class id to `0` (single class `traffic_light`).
+- Symlinks images under `data/stage1/images` → `data/processed/images`.
+- Writes `data/stage1/data.yaml` with `nc: 1`.
+
+### Cell 23 — *Step 10b: Train Stage 1 (housing detector)*
+```python
+stage1_model = YOLO('yolov8n.pt')
+stage1_model.train(
+    data='data/stage1/data.yaml',
+    epochs=30, imgsz=1280, batch=8, amp=False, device=0,
+    project='runs', name='stage1_localizer',
+)
+```
+- 1-class converges faster than 7-class (~30 epochs is enough).
+- `amp=False` works around an RTX 5090 + nightly-torch NaN bug.
+- Output: `runs/stage1_localizer/weights/best.pt`.
+
+### Cell 24 — *Step 10c: Build Stage-2 crop dataset*
+- For every box in `data/processed/labels/{train,val,test}/`, crops the
+  housing region (15% padding) from the corresponding image.
+- Skips boxes with shorter side < 16 px (too tiny even for the classifier).
+- Saves as `data/stage2/<split>/<class_name>/crop_NNNNNN.jpg`
+  (ImageFolder layout — folder name = label).
+
+### Cell 25 — *Step 10d: Train Stage 2 (bulb-state classifier)*
+- Loads **MobileNetV3-Small** with ImageNet-pretrained weights.
+- Replaces only the final `Linear(1024→1000)` with `Linear(1024→7)`.
+- Trains end-to-end at **96×96**, batch 128, **12 epochs**, AdamW + cosine LR.
+- Class-balanced cross-entropy (otherwise `stop_traffic_light` dominates).
+- Augmentations: horizontal flip + color jitter.
+- Saves best epoch to `models/stage2_mobilenet.pt`
+  (dict with `state_dict`, `classes`, `img_size`).
+
+---
+
+### Cell 26 — *Step 11 intro (markdown)*
+
+### Cell 27 — *Step 11: Two-stage inference on sample images*
+- Loads the most recent `runs/stage1_localizer/**/best.pt` and
+  `models/stage2_mobilenet.pt`.
+- Defines `two_stage_predict(image_path, conf=0.25, pad_ratio=0.15)`:
+  1. Stage 1 → housing boxes.
+  2. Crop each box (with 15% padding), resize to 96×96.
+  3. Stage 2 → batched classification.
+  4. Return `[{box, state, det_conf, cls_conf}, ...]`.
+- Runs the pipeline on 4 random test images and saves `two_stage_demo.png`
+  (boxes color-coded by state: green = go, red = stop, gold = warning).
+
+---
+
+### Cell 28 — *Step 12 intro (markdown)*
+
+### Cell 29 — *Step 12a: Stage 1 detection metrics*
+Runs `stage1.val(split='test')` and prints:
+- precision, recall, mAP@0.5, mAP@0.5:.95 on housing localization.
+
+### Cell 30 — *Step 12b: Stage 2 classification metrics*
+- Runs MobileNetV3 over `data/stage2/test/`.
+- Prints test accuracy.
+- If `scikit-learn` is installed, prints a `classification_report`
+  (per-class precision/recall/F1) and saves `stage2_confusion_matrix.png`.
+
+### Cell 31 — *Step 12c: End-to-end pipeline accuracy*
+For every test image:
+1. Run `two_stage_predict()` to get `[(box, state), …]`.
+2. Match each prediction to the best unmatched ground-truth box by **IoU ≥ 0.5**.
+3. Count TP / FP / FN at the box level + state-correctness on matched pairs.
+
+Reports housing precision/recall/F1, state accuracy on matched boxes, and
+the joint end-to-end metric (correct box **and** correct state).
+
+### Cell 32 — *Summary (markdown)*
+Recap of the workflow and where outputs live.
+
+---
+
+## 6. Alternative: CLI Script for Dataset Prep
+
+If you don't want to open the notebook just to prepare the data, the converter
+step is exposed as a standalone script:
 
 ```bash
 python scripts/prepare_dataset.py \
@@ -379,20 +342,9 @@ python scripts/prepare_dataset.py \
   --val-ratio 0.1
 ```
 
-After it finishes, train directly with the Ultralytics CLI:
-```bash
-yolo detect train \
-  data=data/processed/data.yaml \
-  model=yolov8n.pt \
-  epochs=50 \
-  imgsz=1280 \
-  batch=8 \
-  project=runs \
-  name=traffic_light_v2
-```
-
-(You will still need to run the **7-class filter** logic from notebook cell 16
-before training, or the model will collapse on bulb labels.)
+This produces `data/processed/{images,labels}/{train,val,test}/` and a 14-class
+`data.yaml`. You still need the notebook for **Step 7 (class filter)** and all
+training/evaluation — those aren't exposed as CLI scripts.
 
 ---
 
@@ -402,38 +354,41 @@ After a successful run you will have:
 
 | Path | What it is |
 |---|---|
-| `data/processed/images/{train,val,test}/` | Images (or symlinks) for YOLO |
-| `data/processed/labels/{train,val,test}/` | YOLO `.txt` labels |
+| `data/processed/images/{train,val,test}/` | Source images (or symlinks) |
+| `data/processed/labels/{train,val,test}/` | 7-class housing labels |
 | `data/processed/data.yaml` | YOLOv8 dataset config (7 classes) |
-| `runs/traffic_light_v2/` | Training run: plots, metrics, `results.csv`, confusion matrix |
-| `runs/traffic_light_v2/weights/best.pt` | Best checkpoint (used for inference) |
-| `runs/traffic_light_v2/weights/last.pt` | Last-epoch checkpoint |
-| `runs/traffic_light_v2/weights/best.onnx` | ONNX export |
-| `runs/test_predictions*/` | Annotated sample test images |
-| `runs/detect/predict*/` | Annotated demo videos |
-| `models/traffic_light_detector.pt` | Copy of `best.pt` for deployment |
+| `data/stage1/labels/{train,val,test}/` | 1-class housing labels (Stage 1) |
+| `data/stage1/data.yaml` | Stage-1 YOLO config (`nc: 1`) |
+| `data/stage2/{train,val,test}/<class>/*.jpg` | Stage-2 housing crops (ImageFolder layout) |
+| `runs/stage1_localizer/weights/best.pt` | Stage-1 trained YOLO checkpoint |
+| `runs/stage1_localizer/` | Stage-1 training plots, `results.csv`, confusion matrix |
+| `models/stage2_mobilenet.pt` | Stage-2 MobileNetV3-Small weights + class list |
+| `two_stage_demo.png` | Step 11 visual demo (4 random test images) |
+| `stage2_confusion_matrix.png` | Step 12b confusion matrix |
 
 ---
 
-## 8. Inference on a New Image / Video
+## 8. Inference on a New Image
 
-Quick standalone snippet (works in any Python file once the environment is
-activated):
+The trained two-stage pipeline is exposed as `two_stage_predict()` in
+**Step 11 (cell 27)** of the notebook. To use it from anywhere else:
 
 ```python
-from ultralytics import YOLO
-
-model = YOLO("models/traffic_light_detector.pt")
-
-# Single image
-model.predict(source="path/to/image.jpg", save=True, conf=0.25, imgsz=1280)
-
-# Video
-model.predict(source="test_videos/video2.mp4", save=True,
-              conf=0.25, iou=0.45, imgsz=1280, device=0)
+# Run cell 27 once first to load both models and define two_stage_predict().
+preds = two_stage_predict(
+    "path/to/image.jpg",
+    conf=0.25,        # Stage-1 detection threshold
+    pad_ratio=0.15,   # crop padding around each housing
+)
+for p in preds:
+    x1, y1, x2, y2 = p["box"]
+    print(f"{p['state']:30s}  box=({x1},{y1},{x2},{y2})  "
+          f"det_conf={p['det_conf']:.2f}  cls_conf={p['cls_conf']:.2f}")
 ```
 
-Outputs go to `runs/detect/predict*/`.
+The function returns a list of `{box, state, det_conf, cls_conf}` dicts —
+one per detected housing — where `state` is one of the 7 housing-class names
+(e.g. `"go_traffic_light"`, `"stop_left_traffic_light"`).
 
 ---
 
@@ -441,14 +396,14 @@ Outputs go to `runs/detect/predict*/`.
 
 | Symptom | Fix |
 |---|---|
-| `box_loss` stays at **0** during training | You're training on the un-filtered 14-class data — bulbs are too small. Run cell 16 (the 7-class filter) and retrain. |
-| **CUDA OOM** | Lower `batch` (8 → 4 → 2), or lower `imgsz` to 960. |
-| **No detections** on a video | Lower `conf` (0.25 → 0.15 → 0.1). |
-| **Tons of false positives** | Raise `conf` to 0.4+. |
-| **Small / distant lights missed** | Use `imgsz=1280` (or 1536) at inference. |
-| **Inference too slow** | `vid_stride=2` or `3` to skip frames; or use the ONNX export with ONNX Runtime. |
-| **No GPU** | `device='cpu'` everywhere; expect training to take many hours. |
-| Want **higher accuracy** | Swap `yolov8n.pt` → `yolov8s.pt` or `yolov8m.pt`, increase `epochs`. |
+| `box_loss` stays at **0** during Stage-1 training | The 7-class filter (Step 7, cell 16) wasn't applied, or AMP is silently producing NaNs. Re-run cell 16 and confirm `amp=False` in cell 23. |
+| **CUDA OOM** during Stage 1 | Lower `batch` (8 → 4 → 2) in cell 23, or lower `imgsz` to 960. |
+| **CUDA OOM** during Stage 2 | Lower `BATCH` (128 → 64) in cell 25. |
+| **No detections** at Stage 1 | Lower `conf` in `two_stage_predict(image_path, conf=0.15)`. |
+| **Tons of false positive housings** | Raise `conf` to 0.4+ in `two_stage_predict()`. |
+| **Stage 2 confuses similar classes** (e.g. `go` vs `go_forward`) | Increase `IMG_SIZE` to 128 or `EPOCHS` to 20 in cell 25; consider swapping to `mobilenet_v3_large`. |
+| **No GPU** | `device='cpu'` everywhere; Stage 1 will take many hours, Stage 2 still trains in ~30 min. |
+| Want **higher localization accuracy** | Swap `yolov8n.pt` → `yolov8s.pt` in cell 23 and bump `epochs` to 50. |
 
 ---
 
@@ -471,12 +426,13 @@ The fix (notebook cell 16):
 3. Rewrite every label file in `data/processed/labels/`.
 4. Rewrite `data.yaml` with `nc: 7`.
 
-Subsequent runs (`runs/traffic_light_v2*`) trained successfully at
-`imgsz=1280, epochs=50`.
+After the filter, training succeeds. The two-stage pipeline in
+[section 11](#11-two-stage-pipeline-steps-1012) builds on top of this same
+filtered dataset (Stage 2 needs the housing class names as labels).
 
 ---
 
-## 11. Two-Stage Pipeline (Step 13)
+## 11. Two-Stage Pipeline (Steps 10–12)
 
 ### 11.1 The deeper problem the 7-class filter didn't solve
 
@@ -547,10 +503,12 @@ crop each housing + 15% padding
 - The two models can be sized independently. MobileNetV3-Small adds only
   ~2.5 M params and runs in milliseconds per crop.
 
-### 11.3 How to run Step 13
+### 11.3 How to run the two-stage pipeline
 
-Open the notebook and run cells **36 → 41** in order. They are self-contained
-and only depend on `data/processed/` already being prepared.
+Open the notebook and run **Step 10 (cells 22–25)** in order to train both
+stages, then **Step 11 (cell 27)** for a visual sanity check, then
+**Step 12 (cells 29–31)** for evaluation metrics. All steps are self-contained
+and only depend on `data/processed/` already being prepared (Steps 1–8).
 
 ```python
 # After both stages are trained, in any notebook cell:
@@ -568,16 +526,15 @@ Outputs:
 | `models/stage2_mobilenet.pt` | Stage-2 MobileNetV3-Small weights + class list |
 | `two_stage_demo.png` | 4-image demo of the combined pipeline |
 
-### 11.4 Re-generating / tweaking Step 13 cells
+### 11.4 Tweaking the pipeline
 
-The cells were written by [`scripts/add_two_stage_cells.py`](scripts/add_two_stage_cells.py).
-It's idempotent: running it again removes the previous Step 13 cells (marked
-with `STEP-13-TWO-STAGE-PIPELINE`) and re-appends fresh ones. Edit the cell
-sources in that script if you want to change hyper-parameters and regenerate.
+To change training hyper-parameters (epochs, image size, backbone, learning
+rate, etc.), edit the relevant cell directly in the notebook:
 
-```bash
-python scripts/add_two_stage_cells.py
-```
+- **Stage 1 hyper-params** — cell 23 (Step 10b)
+- **Stage 2 hyper-params** — cell 25 (Step 10d)
+- **Inference confidence / padding** — cell 27 (Step 11), arguments to
+  `two_stage_predict(image_path, conf=..., pad_ratio=...)`
 
 ---
 
